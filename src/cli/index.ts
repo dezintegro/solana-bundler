@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import { walletCommand } from './commands/wallet';
 import { launchCommand } from './commands/launch';
 import { sellCommand } from './commands/sell';
+import { priceCommand } from './commands/price';
 
 // Load environment variables
 dotenv.config();
@@ -20,6 +21,7 @@ program
 program.addCommand(walletCommand);
 program.addCommand(launchCommand);
 program.addCommand(sellCommand);
+program.addCommand(priceCommand);
 
 // Parse arguments
 program.parse(process.argv);
