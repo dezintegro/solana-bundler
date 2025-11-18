@@ -134,3 +134,95 @@ export interface LoggerConfig {
   logToFile?: boolean;
   logFilePath?: string;
 }
+
+// ========================================
+// Week 2: Pumpfun & Jito Types
+// ========================================
+
+/**
+ * Token metadata for Pumpfun
+ */
+export interface TokenMetadata {
+  /** Token name */
+  name: string;
+  /** Token symbol */
+  symbol: string;
+  /** Token description */
+  description: string;
+  /** Token image URL (IPFS or Arweave) */
+  imageUri: string;
+  /** Optional social links */
+  twitter?: string;
+  telegram?: string;
+  website?: string;
+}
+
+/**
+ * Jito bundle configuration
+ */
+export interface JitoConfig {
+  /** Jito Block Engine URL */
+  blockEngineUrl: string;
+  /** Jito tip account public key */
+  tipAccount: PublicKey;
+  /** Tip amount in lamports */
+  tipLamports: number;
+}
+
+/**
+ * Bundle status
+ */
+export interface BundleStatus {
+  /** Bundle ID */
+  bundleId: string;
+  /** Status of the bundle */
+  status: 'pending' | 'processing' | 'confirmed' | 'failed';
+  /** Slot where bundle landed (if confirmed) */
+  landedSlot?: number;
+  /** Error message (if failed) */
+  error?: string;
+  /** Transactions in bundle */
+  transactions: string[];
+}
+
+/**
+ * Token launch result
+ */
+export interface TokenLaunchResult {
+  /** Whether launch was successful */
+  success: boolean;
+  /** Bundle ID */
+  bundleId: string;
+  /** Token mint address */
+  mintAddress?: string;
+  /** Bundle status */
+  bundleStatus: BundleStatus;
+  /** Transaction signatures */
+  signatures: string[];
+  /** Error message if failed */
+  error?: string;
+  /** Timestamp */
+  timestamp: number;
+}
+
+/**
+ * Buy instruction parameters
+ */
+export interface BuyParams {
+  /** Amount of SOL to spend */
+  solAmount: number;
+  /** Maximum slippage in basis points */
+  maxSlippageBps: number;
+  /** Token mint address */
+  mint: PublicKey;
+}
+
+/**
+ * Create token parameters
+ */
+export interface CreateTokenParams {
+  /** Token metadata */
+  metadata: TokenMetadata;
+  /** Initial buy amount (optional) */
+  initialBuyAmount?: number;
+}
