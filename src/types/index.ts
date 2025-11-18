@@ -218,6 +218,20 @@ export interface BuyParams {
 }
 
 /**
+ * Sell instruction parameters
+ */
+export interface SellParams {
+  /** Token mint address */
+  mint: PublicKey;
+  /** Amount of tokens to sell (in token units) */
+  tokenAmount: number;
+  /** Minimum SOL output (slippage protection) */
+  minSolOutput: number;
+  /** Creator address (optional - will be fetched from bonding curve if not provided) */
+  creator?: PublicKey;
+}
+
+/**
  * Create token parameters
  */
 export interface CreateTokenParams {

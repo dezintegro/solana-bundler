@@ -11,8 +11,9 @@ import {
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
   getAssociatedTokenAddressSync,
+  getAssociatedTokenAddress,
 } from '@solana/spl-token';
-import { CreateTokenParams, BuyParams } from '../types';
+import { CreateTokenParams, BuyParams, SellParams } from '../types';
 import logger from '../utils/logger';
 
 // Pumpfun program ID (mainnet)
@@ -26,11 +27,15 @@ export const MPL_TOKEN_METADATA_PROGRAM_ID = new PublicKey(
 // Fee recipient for buy transactions
 export const FEE_RECIPIENT = new PublicKey('CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM');
 
+// Fee program for sell transactions
+export const FEE_PROGRAM = new PublicKey('pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ');
+
 // PDA seeds
 const GLOBAL_SEED = Buffer.from('global');
 const MINT_AUTHORITY_SEED = Buffer.from('mint-authority');
 const BONDING_CURVE_SEED = Buffer.from('bonding-curve');
 const EVENT_AUTHORITY_SEED = Buffer.from('__event_authority');
+const CREATOR_VAULT_SEED = Buffer.from('creator-vault');
 
 /**
  * Pumpfun Service
@@ -81,6 +86,27 @@ export class PumpfunService {
    */
   private getEventAuthorityPDA(): [PublicKey, number] {
     return PublicKey.findProgramAddressSync([EVENT_AUTHORITY_SEED], PUMPFUN_PROGRAM_ID);
+  }
+
+  /**
+   * Derive creator vault PDA
+   */
+  private getCreatorVaultPDA(creator: PublicKey): [PublicKey, number] {
+    return PublicKey.findProgramAddressSync([CREATOR_VAULT_SEED, creator.toBuffer()], PUMPFUN_PROGRAM_ID);
+  }
+
+  /**
+   * Derive fee config PDA
+   */
+  private getFeeConfigPDA(): [PublicKey, number] {
+    const feeConfigSeed = Buffer.from([
+      1, 86, 224, 246, 147, 102, 90, 207, 68, 219, 21, 104, 191, 23, 91, 170, 81, 137, 203, 151, 245,
+      210, 255, 59, 101, 93, 43, 182, 253, 109, 24, 176,
+    ]);
+    return PublicKey.findProgramAddressSync(
+      [Buffer.from('fee_config'), feeConfigSeed],
+      FEE_PROGRAM
+    );
   }
 
   /**
@@ -246,6 +272,93 @@ export class PumpfunService {
       logger.error('Failed to create buy instruction', error);
       throw new Error(
         `Failed to create buy instruction: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  /**
+   * Create instruction to sell tokens
+   * Based on actual Pumpfun IDL
+   */
+  async sellTokenInstruction(seller: Keypair, params: SellParams): Promise<TransactionInstruction> {
+    try {
+      logger.info(`Creating sell instruction for ${params.tokenAmount} tokens`);
+
+      // Derive PDAs
+      const [global] = this.getGlobalPDA();
+      const [bondingCurve] = this.getBondingCurvePDA(params.mint);
+      const [eventAuthority] = this.getEventAuthorityPDA();
+      const [feeConfig] = this.getFeeConfigPDA();
+
+      // Get associated token account for bonding curve
+      const associatedBondingCurve = await getAssociatedTokenAddress(
+        params.mint,
+        bondingCurve,
+        true // allowOwnerOffCurve
+      );
+
+      // Get seller's associated token account
+      const associatedUser = await getAssociatedTokenAddress(params.mint, seller.publicKey);
+
+      // Get creator - fetch from bonding curve if not provided
+      let creator = params.creator;
+      if (!creator) {
+        const bondingCurveAccount = await this.connection.getAccountInfo(bondingCurve);
+        if (!bondingCurveAccount) {
+          throw new Error('Bonding curve not found - token may not exist');
+        }
+
+        // Parse creator from bonding curve account (offset 8 for discriminator + 40 bytes for other fields)
+        // This is a simplified approach - actual parsing depends on bonding curve structure
+        creator = new PublicKey(bondingCurveAccount.data.slice(8, 40));
+      }
+
+      const [creatorVault] = this.getCreatorVaultPDA(creator);
+
+      // Build instruction data
+      // Discriminator: [51, 230, 133, 164, 1, 127, 131, 173]
+      const discriminator = Buffer.from([51, 230, 133, 164, 1, 127, 131, 173]);
+
+      // Args: amount (u64), min_sol_output (u64)
+      const amountBytes = Buffer.alloc(8);
+      amountBytes.writeBigUInt64LE(BigInt(params.tokenAmount));
+
+      const minSolOutputBytes = Buffer.alloc(8);
+      minSolOutputBytes.writeBigUInt64LE(BigInt(params.minSolOutput));
+
+      const data = Buffer.concat([discriminator, amountBytes, minSolOutputBytes]);
+
+      // Build accounts array (based on IDL - 14 accounts)
+      const keys: AccountMeta[] = [
+        { pubkey: global, isSigner: false, isWritable: false },
+        { pubkey: FEE_RECIPIENT, isSigner: false, isWritable: true },
+        { pubkey: params.mint, isSigner: false, isWritable: false },
+        { pubkey: bondingCurve, isSigner: false, isWritable: true },
+        { pubkey: associatedBondingCurve, isSigner: false, isWritable: true },
+        { pubkey: associatedUser, isSigner: false, isWritable: true },
+        { pubkey: seller.publicKey, isSigner: true, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: creatorVault, isSigner: false, isWritable: true },
+        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+        { pubkey: eventAuthority, isSigner: false, isWritable: false },
+        { pubkey: PUMPFUN_PROGRAM_ID, isSigner: false, isWritable: false },
+        { pubkey: feeConfig, isSigner: false, isWritable: false },
+        { pubkey: FEE_PROGRAM, isSigner: false, isWritable: false },
+      ];
+
+      const instruction = new TransactionInstruction({
+        keys,
+        programId: PUMPFUN_PROGRAM_ID,
+        data,
+      });
+
+      logger.info('Sell instruction built successfully');
+
+      return instruction;
+    } catch (error) {
+      logger.error('Failed to create sell instruction', error);
+      throw new Error(
+        `Failed to create sell instruction: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
     }
   }
