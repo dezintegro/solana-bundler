@@ -3,6 +3,7 @@
 import { Command } from 'commander';
 import dotenv from 'dotenv';
 import { walletCommand } from './commands/wallet';
+import { launchCommand } from './commands/launch';
 
 // Load environment variables
 dotenv.config();
@@ -14,8 +15,9 @@ program
   .description('Automated Solana token launcher with Jito bundles for atomic execution')
   .version('0.1.0');
 
-// Add wallet command
+// Add commands
 program.addCommand(walletCommand);
+program.addCommand(launchCommand);
 
 // Parse arguments
 program.parse(process.argv);

@@ -2,14 +2,15 @@ import {
   Connection,
   Keypair,
   PublicKey,
-  SystemProgram,
   TransactionInstruction,
   TransactionMessage,
   VersionedTransaction,
   LAMPORTS_PER_SOL,
   AddressLookupTableAccount,
 } from '@solana/web3.js';
-import axios from 'axios';
+import { searcherClient } from 'jito-ts/dist/sdk/block-engine/searcher';
+import { Bundle } from 'jito-ts/dist/sdk/block-engine/types';
+import { BundleResult } from 'jito-ts/dist/gen/block-engine/bundle';
 import { JitoConfig, BundleStatus } from '../types';
 import logger from '../utils/logger';
 
@@ -28,53 +29,44 @@ export const JITO_TIP_ACCOUNTS = [
 /**
  * Jito Bundle Service
  * Handles creation and submission of transaction bundles via Jito Block Engine
+ * Uses production jito-ts SDK with gRPC communication
  */
 export class JitoService {
   private connection: Connection;
   private config: JitoConfig;
+  private client: ReturnType<typeof searcherClient>;
+  private bundleTransactionLimit: number = 5;
 
   constructor(connection: Connection, config: JitoConfig) {
     this.connection = connection;
     this.config = config;
 
+    // Create SearcherClient without auth keypair (public access)
+    this.client = searcherClient(config.blockEngineUrl);
+
     logger.info(`Jito service initialized with block engine: ${config.blockEngineUrl}`);
+    logger.info('Using production jito-ts SDK (no auth required)');
   }
 
   /**
-   * Create a tip transaction
+   * Get tip accounts from Jito
    */
-  private async createTipTransaction(
-    payer: Keypair,
-    tipLamports: number
-  ): Promise<VersionedTransaction> {
+  async getTipAccounts(): Promise<PublicKey[]> {
     try {
-      const tipAccount = this.config.tipAccount;
+      const result = await this.client.getTipAccounts();
 
-      logger.debug(`Creating tip transaction: ${tipLamports / LAMPORTS_PER_SOL} SOL to ${tipAccount.toBase58()}`);
+      if ('error' in result) {
+        logger.warn('Failed to fetch tip accounts from Jito, using defaults', result.error);
+        return JITO_TIP_ACCOUNTS;
+      }
 
-      const { blockhash } = await this.connection.getLatestBlockhash();
+      const tipAccounts = result.value.map((account) => new PublicKey(account));
+      logger.debug(`Fetched ${tipAccounts.length} tip accounts from Jito`);
 
-      const tipInstruction = SystemProgram.transfer({
-        fromPubkey: payer.publicKey,
-        toPubkey: tipAccount,
-        lamports: tipLamports,
-      });
-
-      const messageV0 = new TransactionMessage({
-        payerKey: payer.publicKey,
-        recentBlockhash: blockhash,
-        instructions: [tipInstruction],
-      }).compileToV0Message();
-
-      const transaction = new VersionedTransaction(messageV0);
-      transaction.sign([payer]);
-
-      return transaction;
+      return tipAccounts;
     } catch (error) {
-      logger.error('Failed to create tip transaction', error);
-      throw new Error(
-        `Failed to create tip transaction: ${error instanceof Error ? error.message : 'Unknown error'}`
-      );
+      logger.error('Error fetching tip accounts', error);
+      return JITO_TIP_ACCOUNTS;
     }
   }
 
@@ -142,10 +134,7 @@ export class JitoService {
   }
 
   /**
-   * Send a bundle to Jito
-   *
-   * NOTE: This is a simplified implementation.
-   * Production would use jito-ts SDK properly.
+   * Send a bundle to Jito using production SDK
    */
   async sendBundle(
     transactions: VersionedTransaction[],
@@ -155,7 +144,16 @@ export class JitoService {
     try {
       const actualTip = tipLamports || this.config.tipLamports;
 
-      logger.info(`Preparing bundle with ${transactions.length} transactions and ${actualTip / LAMPORTS_PER_SOL} SOL tip`);
+      logger.info(
+        `Preparing bundle with ${transactions.length} transactions and ${actualTip / LAMPORTS_PER_SOL} SOL tip`
+      );
+
+      // Validate transaction count
+      if (transactions.length > this.bundleTransactionLimit - 1) {
+        throw new Error(
+          `Bundle has ${transactions.length} transactions, but limit is ${this.bundleTransactionLimit - 1} (saving 1 slot for tip)`
+        );
+      }
 
       // Simulate bundle first (best practice)
       const simulationSuccess = await this.simulateBundle(transactions);
@@ -163,28 +161,34 @@ export class JitoService {
         throw new Error('Bundle simulation failed - not sending to Jito');
       }
 
-      // Create tip transaction
-      const tipTransaction = await this.createTipTransaction(tipPayer, actualTip);
+      // Get recent blockhash for tip transaction
+      const { blockhash } = await this.connection.getLatestBlockhash();
 
-      // Create bundle with transactions + tip
-      const allTransactions = [...transactions, tipTransaction];
+      // Create Bundle instance
+      const bundle = new Bundle(transactions, this.bundleTransactionLimit);
 
-      // Serialize transactions for Jito
-      const encodedTransactions = allTransactions.map(tx =>
-        Buffer.from(tx.serialize()).toString('base64')
+      // Add tip transaction to bundle
+      const bundleWithTip = bundle.addTipTx(
+        tipPayer,
+        actualTip,
+        this.config.tipAccount,
+        blockhash
       );
 
-      logger.info('Sending bundle to Jito Block Engine...');
+      if (bundleWithTip instanceof Error) {
+        throw new Error(`Failed to add tip to bundle: ${bundleWithTip.message}`);
+      }
 
-      // Send via HTTP API (simplified)
-      const response = await axios.post(`${this.config.blockEngineUrl}/api/v1/bundles`, {
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'sendBundle',
-        params: [encodedTransactions],
-      });
+      logger.info('Sending bundle to Jito Block Engine via gRPC...');
 
-      const bundleId = response.data.result || 'bundle-' + Date.now();
+      // Send bundle using SearcherClient
+      const result = await this.client.sendBundle(bundleWithTip);
+
+      if ('error' in result) {
+        throw new Error(`Bundle submission failed: ${result.error.message} - ${result.error.details}`);
+      }
+
+      const bundleId = result.value;
 
       logger.info(`Bundle sent successfully. Bundle ID: ${bundleId}`);
 
@@ -198,35 +202,123 @@ export class JitoService {
   }
 
   /**
-   * Wait for bundle confirmation
+   * Wait for bundle confirmation using onBundleResult stream
    */
   async waitForBundleConfirmation(
     bundleId: string,
     timeoutMs: number = 60000
   ): Promise<BundleStatus> {
-    const startTime = Date.now();
-    const pollInterval = 2000; // Poll every 2 seconds
+    return new Promise((resolve, reject) => {
+      const startTime = Date.now();
+      let resolved = false;
 
-    logger.info(`Waiting for bundle confirmation: ${bundleId}`);
+      logger.info(`Waiting for bundle confirmation: ${bundleId}`);
 
-    while (Date.now() - startTime < timeoutMs) {
-      try {
-        // Wait between polls
-        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+      // Set timeout
+      const timeout = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          unsubscribe();
+          logger.warn(`Bundle confirmation timeout after ${timeoutMs}ms`);
+          resolve({
+            bundleId,
+            status: 'pending',
+            transactions: [],
+          });
+        }
+      }, timeoutMs);
 
-        logger.debug(`Polling bundle status (${Math.floor((Date.now() - startTime) / 1000)}s elapsed)`);
+      // Subscribe to bundle results
+      const unsubscribe = this.client.onBundleResult(
+        (result: BundleResult) => {
+          if (result.bundleId === bundleId && !resolved) {
+            resolved = true;
+            clearTimeout(timeout);
+            unsubscribe();
 
-        // In production, query Jito API for bundle status
-        // For now, we just wait and assume success after timeout
-      } catch (error) {
-        logger.error('Error checking bundle status', error);
-      }
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+            logger.info(`Received bundle result after ${elapsed}s`);
+
+            resolve(this.parseBundleResult(result));
+          }
+        },
+        (error: Error) => {
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timeout);
+            unsubscribe();
+            logger.error('Bundle result stream error', error);
+            reject(error);
+          }
+        }
+      );
+    });
+  }
+
+  /**
+   * Parse BundleResult from Jito into our BundleStatus type
+   */
+  private parseBundleResult(result: BundleResult): BundleStatus {
+    if (result.finalized) {
+      return {
+        bundleId: result.bundleId,
+        status: 'confirmed',
+        transactions: [],
+      };
     }
 
-    logger.warn(`Bundle confirmation timeout after ${timeoutMs}ms`);
+    if (result.processed) {
+      return {
+        bundleId: result.bundleId,
+        status: 'confirmed',
+        landedSlot: result.processed.slot,
+        transactions: [],
+      };
+    }
+
+    if (result.accepted) {
+      return {
+        bundleId: result.bundleId,
+        status: 'processing',
+        landedSlot: result.accepted.slot,
+        transactions: [],
+      };
+    }
+
+    if (result.rejected) {
+      let errorMsg = 'Bundle rejected';
+
+      if (result.rejected.simulationFailure) {
+        errorMsg = `Simulation failure: ${result.rejected.simulationFailure.msg || 'Unknown'}`;
+      } else if (result.rejected.stateAuctionBidRejected) {
+        errorMsg = `State auction bid rejected: ${result.rejected.stateAuctionBidRejected.msg || 'Bid too low'}`;
+      } else if (result.rejected.winningBatchBidRejected) {
+        errorMsg = `Winning batch bid rejected: ${result.rejected.winningBatchBidRejected.msg || 'Bid too low'}`;
+      } else if (result.rejected.internalError) {
+        errorMsg = `Internal error: ${result.rejected.internalError.msg}`;
+      } else if (result.rejected.droppedBundle) {
+        errorMsg = `Dropped: ${result.rejected.droppedBundle.msg}`;
+      }
+
+      return {
+        bundleId: result.bundleId,
+        status: 'failed',
+        error: errorMsg,
+        transactions: [],
+      };
+    }
+
+    if (result.dropped) {
+      return {
+        bundleId: result.bundleId,
+        status: 'failed',
+        error: `Bundle dropped: ${result.dropped.reason}`,
+        transactions: [],
+      };
+    }
 
     return {
-      bundleId,
+      bundleId: result.bundleId,
       status: 'pending',
       transactions: [],
     };
