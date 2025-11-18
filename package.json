@@ -45,7 +45,6 @@
     "crypto-js": "^4.2.0",
     "dotenv": "^16.3.1",
     "inquirer": "^9.2.12",
-    "jito-js": "^3.0.0",
     "ora": "^7.0.1",
     "tweetnacl": "^1.0.3",
     "winston": "^3.11.0"
