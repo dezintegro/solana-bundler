@@ -58,7 +58,7 @@ export class TokenLauncherService {
         }
       );
 
-      logger.info(`✅ Token mint will be: ${mint.toBase58()}`);
+      logger.info(`✅ Token mint will be: ${mint.publicKey.toBase58()}`);
 
       // Step 2: Build buy instructions for all buyer wallets
       logger.info(`📝 Step 2: Building ${walletCollection.buyers.length} buy instructions...`);
@@ -71,7 +71,7 @@ export class TokenLauncherService {
         logger.debug(`Building buy instruction for buyer ${i + 1}/${walletCollection.buyers.length}`);
 
         const buyInstruction = await this.pumpfun.buyTokenInstruction(buyer.keypair, {
-          mint,
+          mint: mint.publicKey,
           solAmount: config.buyAmountPerWallet * LAMPORTS_PER_SOL,
           maxSlippageBps: config.slippageBps,
         });
@@ -125,7 +125,7 @@ export class TokenLauncherService {
         logger.info('='.repeat(60));
         logger.info('🎉 Token Launch Successful!');
         logger.info('='.repeat(60));
-        logger.info(`Token Mint: ${mint.toBase58()}`);
+        logger.info(`Token Mint: ${mint.publicKey.toBase58()}`);
         logger.info(`Bundle ID: ${bundleId}`);
         logger.info(`Time elapsed: ${elapsed}s`);
         logger.info('='.repeat(60));
@@ -133,7 +133,7 @@ export class TokenLauncherService {
         return {
           success: true,
           bundleId,
-          mintAddress: mint.toBase58(),
+          mintAddress: mint.publicKey.toBase58(),
           bundleStatus,
           signatures: bundleStatus.transactions,
           timestamp: Date.now(),
@@ -150,7 +150,7 @@ export class TokenLauncherService {
         return {
           success: false,
           bundleId,
-          mintAddress: mint.toBase58(),
+          mintAddress: mint.publicKey.toBase58(),
           bundleStatus,
           signatures: [],
           error: `Bundle status: ${bundleStatus.status}`,
@@ -204,7 +204,7 @@ export class TokenLauncherService {
       const buyInstructions: TransactionInstruction[] = [];
       for (const buyer of walletCollection.buyers) {
         const instruction = await this.pumpfun.buyTokenInstruction(buyer.keypair, {
-          mint,
+          mint: mint.publicKey,
           solAmount: config.buyAmountPerWallet * LAMPORTS_PER_SOL,
           maxSlippageBps: config.slippageBps,
         });
