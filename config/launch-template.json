@@ -1,0 +1,48 @@
+{
+  "token": {
+    "name": "My Awesome Token",
+    "symbol": "MAT",
+    "description": "A revolutionary token that will change the world!",
+    "image": "./assets/logo.png",
+    "social": {
+      "twitter": "https://twitter.com/mytoken",
+      "telegram": "https://t.me/mytoken",
+      "website": "https://mytoken.com"
+    }
+  },
+  "wallets": {
+    "buyerCount": 20,
+    "fundingAmounts": {
+      "devWalletSol": 0.1,
+      "buyerWalletSol": 0.05
+    }
+  },
+  "buy": {
+    "type": "random",
+    "fixedAmount": null,
+    "randomRange": {
+      "min": 0.01,
+      "max": 0.03
+    },
+    "customAmounts": null,
+    "percentage": null
+  },
+  "jito": {
+    "tipAmount": 10000,
+    "endpoint": "amsterdam"
+  },
+  "advanced": {
+    "simulateBeforeSend": true,
+    "lutEnabled": true,
+    "slippage": 10,
+    "maxRetries": 3,
+    "retryDelayMs": 1000
+  },
+  "_comments": {
+    "buy.type": "Options: 'fixed' | 'random' | 'custom' | 'percentage'",
+    "jito.tipAmount": "In lamports. 10000 lamports = 0.00001 SOL",
+    "jito.endpoint": "Options: 'amsterdam' | 'frankfurt' | 'ny' | 'slc' | 'tokyo' | 'auto'",
+    "advanced.slippage": "Slippage tolerance in percentage (1-50)",
+    "advanced.lutEnabled": "CRITICAL: Should always be true for bundles with 20+ wallets"
+  }
+}
